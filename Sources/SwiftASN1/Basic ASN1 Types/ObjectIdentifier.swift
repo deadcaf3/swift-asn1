@@ -158,7 +158,13 @@ extension ASN1ObjectIdentifier {
             )
         }
 
-        let serializedFirstComponent = (firstComponent * 40) + secondComponent
+        let (firstComponentTimesForty, multiplyOverflowed) = firstComponent.multipliedReportingOverflow(by: 40)
+        let (serializedFirstComponent, addOverflowed) = firstComponentTimesForty.addingReportingOverflow(
+            secondComponent
+        )
+        guard !multiplyOverflowed, !addOverflowed else {
+            throw ASN1Error.invalidASN1Object(reason: "First two OID components are too large to combine")
+        }
         ASN1ObjectIdentifier._writeOIDSubidentifier(serializedFirstComponent, into: &bytes)
 
         while let component = iterator.next() {
@@ -397,9 +403,10 @@ extension ArraySlice where Element == UInt8 {
 extension UInt {
     @inlinable
     init<Bytes: Collection>(sevenBitBigEndianBytes bytes: Bytes) throws where Bytes.Element == UInt8 {
-        // We need to know how many bytes we _need_ to store this "int". As a base optimization we refuse to parse
-        // anything larger than 9 bytes wide, even though conceptually we could fit a few more bits.
-        guard ((bytes.count * 7) + 7) / 8 <= MemoryLayout<UInt>.size else {
+        // We need to know how many bits we _need_ to store this "int": 7 for every byte after the first, plus the
+        // significant bits of the first. This must match what writeUsing7BitBytesASN1Discipline can produce for any UInt.
+        let firstByteBits = bytes.first.map { 8 - ($0 & 0x7F).leadingZeroBitCount } ?? 0
+        guard ((bytes.count - 1) * 7) + firstByteBits <= UInt.bitWidth else {
             throw ASN1Error.invalidASN1Object(reason: "Unable to store OID subidentifier")
         }
 

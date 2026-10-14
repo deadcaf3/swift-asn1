@@ -335,8 +335,8 @@ class ASN1Tests: XCTestCase {
     }
 
     func testGracefullyTolerateExcessivelyLargeMultibyteTags() throws {
-        // This is an ASN.1 object with a multibyte explicit tag whose raw value is one larger than the max we tolerate, which is (1 << 63).
-        let base64Node = "v4GAgICAgICAgAADAgEB"
+        // This is an ASN.1 object with a multibyte explicit tag whose raw value is 2^64, one larger than the max we tolerate, UInt.max.
+        let base64Node = "v4KAgICAgICAgAADAgEB"
         let decodedInteger = Array(Data(base64Encoded: base64Node)!)
         XCTAssertThrowsError(try DER.parse(decodedInteger)) { error in
             XCTAssertEqual((error as? ASN1Error)?.code, .invalidASN1Object)
@@ -420,6 +420,36 @@ class ASN1Tests: XCTestCase {
         XCTAssertThrowsError(try ASN1ObjectIdentifier(derEncoded: parsed)) { error in
             XCTAssertEqual((error as? ASN1Error)?.code, .invalidASN1Object)
         }
+    }
+
+    func testOIDSubidentifiersRoundTripAcrossFullUIntRange() throws {
+        // Subidentifiers at or above 2^63 need 10 7-bit bytes on 64-bit platforms. Whatever we encode we must decode.
+        for component in [UInt(1) << 63 - 1, UInt(1) << 63, UInt.max] {
+            let oid = try ASN1ObjectIdentifier(elements: [1, 2, component])
+            var serializer = DER.Serializer()
+            try serializer.serialize(oid)
+
+            let parsed = try ASN1ObjectIdentifier(derEncoded: serializer.serializedBytes)
+            XCTAssertEqual(parsed.oidComponents, [1, 2, component])
+        }
+    }
+
+    func testRejectsOIDSubidentifiersWiderThanUInt() throws {
+        // This is the ASN.1 OID 1.2.(2^64): 10 7-bit bytes whose first byte carries 2 significant bits, one too many.
+        let badNode: [UInt8] = [0x06, 0x0b, 0x2a, 0x82, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00]
+        let parsed = try DER.parse(badNode)
+
+        XCTAssertThrowsError(try ASN1ObjectIdentifier(derEncoded: parsed)) { error in
+            XCTAssertEqual((error as? ASN1Error)?.code, .invalidASN1Object)
+        }
+    }
+
+    func testLongFormTagNumberRoundTripsAtUIntMax() throws {
+        var serializer = DER.Serializer()
+        try serializer.serialize(ASN1Null(), explicitlyTaggedWithTagNumber: .max, tagClass: .contextSpecific)
+
+        let parsed = try DER.parse(serializer.serializedBytes)
+        XCTAssertEqual(parsed.identifier, ASN1Identifier(tagWithNumber: .max, tagClass: .contextSpecific))
     }
 
     func testRejectsMassiveIntegers() throws {
@@ -1268,6 +1298,15 @@ class ASN1Tests: XCTestCase {
 
         XCTAssertThrowsError(try ASN1ObjectIdentifier(elements: [])) { error in
             XCTAssertEqual((error as? ASN1Error)?.code, .tooFewOIDComponents)
+        }
+
+        // The first two components are combined as (first * 40) + second, which must not overflow.
+        XCTAssertThrowsError(try ASN1ObjectIdentifier(elements: [.max, 0])) { error in
+            XCTAssertEqual((error as? ASN1Error)?.code, .invalidASN1Object)
+        }
+
+        XCTAssertThrowsError(try ASN1ObjectIdentifier(elements: [2, .max])) { error in
+            XCTAssertEqual((error as? ASN1Error)?.code, .invalidASN1Object)
         }
     }
 
